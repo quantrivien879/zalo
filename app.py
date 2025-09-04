@@ -380,7 +380,33 @@ def handle_link_message(event, user_id):
     except Exception as e:
         logger.error(f"Error handling link message: {e}")
 
-@app.route('/setup-webhook', methods=['POST'])
+@app.route('/test-token', methods=['GET'])
+def test_token():
+    """Test Zalo Bot Token"""
+    try:
+        if not ZALO_BOT_TOKEN:
+            return jsonify({"error": "ZALO_BOT_TOKEN not configured"}), 400
+        
+        # Test với API đơn giản
+        url = f"{zalo_bot.base_url}/oa/profile"
+        headers = {
+            'access_token': ZALO_BOT_TOKEN
+        }
+        
+        response = requests.get(url, headers=headers)
+        logger.info(f"Token test response: {response.status_code}")
+        logger.info(f"Token test response text: {response.text}")
+        
+        return jsonify({
+            "token_configured": True,
+            "api_response_status": response.status_code,
+            "api_response": response.text,
+            "token_valid": response.status_code == 200
+        })
+        
+    except Exception as e:
+        logger.error(f"Error testing token: {e}")
+        return jsonify({"error": str(e)}), 500
 def setup_webhook():
     """Endpoint để thiết lập webhook (chỉ cần gọi 1 lần)"""
     try:
