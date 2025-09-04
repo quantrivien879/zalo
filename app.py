@@ -2,9 +2,12 @@ import os
 import json
 import requests
 from flask import Flask, request, jsonify
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from datetime import datetime
 import logging
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 # Cấu hình logging
 logging.basicConfig(level=logging.INFO)
@@ -89,16 +92,17 @@ class ZaloBot:
 
 class GeminiAI:
     def __init__(self, api_key):
-        genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel('gemini-pro')
+        self.client = genai.Client(api_key=api_key)
+        self.model = "gemini-2.5-flash"
+        self.executor = ThreadPoolExecutor(max_workers=2)
         
-    def generate_response(self, message, context=None):
-        """Tạo phản hồi từ Gemini"""
+    def generate_response(self, message, context=None, use_search=False):
+        """Tạo phản hồi từ Gemini với khả năng tìm kiếm"""
         try:
             # Thêm context nếu có
             prompt = message
             if context:
-                prompt = f"Ngữ cảnh: {context}\nTin nhắn: {message}"
+                prompt = f"Ngữ cảnh cuộc trò chuyện trước đó:\n{context}\n\nTin nhắn hiện tại: {message}"
             
             # Thêm hướng dẫn cho bot
             system_prompt = """
@@ -106,16 +110,67 @@ class GeminiAI:
             Hãy trả lời một cách tự nhiên, thân thiện và hữu ích.
             Trả lời bằng tiếng Việt trừ khi được yêu cầu ngôn ngữ khác.
             Giữ câu trả lời ngắn gọn và dễ hiểu (tối đa 500 từ).
+            
+            Nếu câu hỏi cần thông tin mới nhất hoặc tìm kiếm trên internet, 
+            hãy sử dụng công cụ tìm kiếm để có thông tin chính xác.
             """
             
-            full_prompt = f"{system_prompt}\n\nCâu hỏi: {prompt}"
+            full_prompt = f"{system_prompt}\n\n{prompt}"
             
-            response = self.model.generate_content(full_prompt)
-            return response.text
+            # Tạo content cho API mới
+            contents = [
+                types.Content(
+                    role="user",
+                    parts=[
+                        types.Part.from_text(text=full_prompt),
+                    ],
+                ),
+            ]
+            
+            # Cấu hình tools nếu cần tìm kiếm
+            tools = []
+            if use_search or self._should_use_search(message):
+                tools.append(types.Tool(googleSearch=types.GoogleSearch()))
+            
+            # Cấu hình generation
+            generate_content_config = types.GenerateContentConfig(
+                thinking_config=types.ThinkingConfig(
+                    thinking_budget=-1,  # Unlimited thinking
+                ),
+                tools=tools if tools else None,
+            )
+            
+            # Generate response
+            response_text = ""
+            for chunk in self.client.models.generate_content_stream(
+                model=self.model,
+                contents=contents,
+                config=generate_content_config,
+            ):
+                if chunk.text:
+                    response_text += chunk.text
+            
+            return response_text if response_text else "Xin lỗi, tôi không thể tạo được phản hồi lúc này."
             
         except Exception as e:
             logger.error(f"Error generating response: {e}")
             return "Xin lỗi, tôi đang gặp chút vấn đề. Bạn có thể thử lại sau không?"
+    
+    def _should_use_search(self, message):
+        """Kiểm tra xem có nên sử dụng tìm kiếm không"""
+        search_keywords = [
+            'tin tức', 'news', 'mới nhất', 'hiện tại', 'hôm nay',
+            'giá', 'price', 'tỷ giá', 'thời tiết', 'weather',
+            'tìm kiếm', 'search', 'thông tin về', 'what is',
+            'covid', 'virus', 'dịch bệnh', 'bầu cử', 'election'
+        ]
+        
+        message_lower = message.lower()
+        return any(keyword in message_lower for keyword in search_keywords)
+    
+    def generate_response_async(self, message, context=None, use_search=False):
+        """Async wrapper cho generate_response"""
+        return self.executor.submit(self.generate_response, message, context, use_search)
 
 # Khởi tạo bot và AI
 zalo_bot = ZaloBot(ZALO_BOT_TOKEN)
@@ -194,7 +249,14 @@ def handle_text_message(event, user_id):
         
         # Xử lý các lệnh đặc biệt
         if message.lower().startswith('/start'):
-            response = "🤖 Xin chào! Tôi là Bot AI được trang bị Gemini. Tôi có thể trả lời câu hỏi, hỗ trợ và trò chuyện với bạn. Hãy gửi bất kỳ câu hỏi nào bạn muốn!"
+            response = """🤖 Xin chào! Tôi là Bot AI được trang bị Gemini 2.5 Flash với khả năng:
+
+✨ Trả lời câu hỏi thông minh
+🔍 Tìm kiếm thông tin mới nhất trên Google  
+💭 Suy nghĩ logic và phân tích sâu
+🗣️ Trò chuyện tự nhiên bằng tiếng Việt
+
+Hãy gửi bất kỳ câu hỏi nào bạn muốn!"""
             zalo_bot.send_message(user_id, response)
             return
             
@@ -204,12 +266,20 @@ def handle_text_message(event, user_id):
 /start - Khởi động bot
 /help - Hiển thị trợ giúp
 /clear - Xóa lịch sử trò chuyện
+/search [câu hỏi] - Tìm kiếm thông tin mới nhất
 
-🤖 Tính năng:
-• Trả lời câu hỏi bằng AI Gemini
-• Trò chuyện tự nhiên
-• Hỗ trợ tiếng Việt
+🤖 Tính năng AI mới:
+• Gemini 2.5 Flash - Model mới nhất
+• Tìm kiếm Google tự động
+• Khả năng suy nghĩ logic (thinking)
+• Trả lời dựa trên thông tin real-time
 • Nhớ ngữ cảnh cuộc trò chuyện
+
+🔍 Tự động tìm kiếm khi:
+• Hỏi tin tức, thời tiết
+• Hỏi giá cả, tỷ giá
+• Cần thông tin mới nhất
+• Hỏi về sự kiện hiện tại
 
 Chỉ cần gửi tin nhắn bình thường để bắt đầu!
             """
@@ -222,36 +292,68 @@ Chỉ cần gửi tin nhắn bình thường để bắt đầu!
             response = "🗑️ Đã xóa lịch sử trò chuyện!"
             zalo_bot.send_message(user_id, response)
             return
+            
+        elif message.lower().startswith('/search '):
+            search_query = message[8:]  # Bỏ "/search "
+            if search_query.strip():
+                logger.info(f"Force search for: {search_query}")
+                zalo_bot.send_message(user_id, "🔍 Đang tìm kiếm thông tin mới nhất...")
+                if gemini_ai:
+                    ai_response = gemini_ai.generate_response(search_query, None, use_search=True)
+                    zalo_bot.send_message(user_id, f"🔍 **Kết quả tìm kiếm:**\n\n{ai_response}")
+                return
+            else:
+                zalo_bot.send_message(user_id, "❌ Vui lòng nhập nội dung cần tìm kiếm. Ví dụ: /search giá Bitcoin hôm nay")
+                return
         
         # Sử dụng Gemini AI để tạo phản hồi
         if gemini_ai:
-            # Lấy context của user
-            context = user_context.get(user_id, [])
-            context_text = None
-            if context:
-                # Lấy 3 tin nhắn gần nhất làm context
-                recent_context = context[-6:]  # 3 cặp hỏi-đáp
-                context_text = "\n".join([f"User: {ctx['user']}\nBot: {ctx['bot']}" for ctx in recent_context])
-            
-            # Tạo phản hồi
-            ai_response = gemini_ai.generate_response(message, context_text)
-            
-            # Lưu context
-            if user_id not in user_context:
-                user_context[user_id] = []
-            
-            user_context[user_id].append({
-                'user': message,
-                'bot': ai_response,
-                'timestamp': datetime.now().isoformat()
-            })
-            
-            # Giữ chỉ 10 cặp hỏi-đáp gần nhất
-            if len(user_context[user_id]) > 10:
-                user_context[user_id] = user_context[user_id][-10:]
-            
-            # Gửi phản hồi
-            zalo_bot.send_message(user_id, ai_response)
+            try:
+                # Lấy context của user
+                context = user_context.get(user_id, [])
+                context_text = None
+                if context:
+                    # Lấy 3 tin nhắn gần nhất làm context
+                    recent_context = context[-6:]  # 3 cặp hỏi-đáp
+                    context_text = "\n".join([f"User: {ctx['user']}\nBot: {ctx['bot']}" for ctx in recent_context])
+                
+                # Kiểm tra xem có nên thông báo đang tìm kiếm không
+                will_search = gemini_ai._should_use_search(message)
+                if will_search:
+                    zalo_bot.send_message(user_id, "🔍 Đang tìm kiếm thông tin mới nhất...")
+                
+                # Tạo phản hồi với SDK mới
+                ai_response = gemini_ai.generate_response(message, context_text)
+                
+                # Lưu context
+                if user_id not in user_context:
+                    user_context[user_id] = []
+                
+                user_context[user_id].append({
+                    'user': message,
+                    'bot': ai_response,
+                    'timestamp': datetime.now().isoformat()
+                })
+                
+                # Giữ chỉ 10 cặp hỏi-đáp gần nhất
+                if len(user_context[user_id]) > 10:
+                    user_context[user_id] = user_context[user_id][-10:]
+                
+                # Gửi phản hồi với prefix nếu đã tìm kiếm
+                if will_search:
+                    final_response = f"🔍 **Thông tin mới nhất:**\n\n{ai_response}"
+                else:
+                    final_response = ai_response
+                    
+                zalo_bot.send_message(user_id, final_response)
+                
+            except Exception as e:
+                logger.error(f"Error in AI processing: {e}")
+                zalo_bot.send_message(user_id, "⚠️ Đã xảy ra lỗi khi xử lý. Tôi sẽ thử trả lời đơn giản...")
+                
+                # Fallback response
+                fallback_response = f"📝 Tôi đã nhận được: \"{message}\"\n\n💡 Bạn có thể thử:\n• Diễn đạt lại câu hỏi\n• Sử dụng /help để xem hướng dẫn\n• Dùng /search [nội dung] để tìm kiếm"
+                zalo_bot.send_message(user_id, fallback_response)
             
         else:
             # Fallback nếu không có Gemini
@@ -260,7 +362,7 @@ Chỉ cần gửi tin nhắn bình thường để bắt đầu!
             
     except Exception as e:
         logger.error(f"Error handling text message: {e}")
-        zalo_bot.send_message(user_id, "Xin lỗi, đã xảy ra lỗi khi xử lý tin nhắn của bạn. Vui lòng thử lại!")
+        zalo_bot.send_message(user_id, "❌ Xin lỗi, đã xảy ra lỗi khi xử lý tin nhắn. Vui lòng thử lại!")
 
 def handle_image_message(event, user_id):
     """Xử lý tin nhắn hình ảnh"""
