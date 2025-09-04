@@ -23,71 +23,52 @@ WEBHOOK_URL = os.environ.get('WEBHOOK_URL')  # URL webhook trên Render
 class ZaloBot:
     def __init__(self, token):
         self.token = token
-        self.base_url = "https://openapi.zalo.me/v3.0"
+        self.base_url = f"https://bot-api.zapps.me/bot{token}"  # Sử dụng Bot API
         
-    def send_message(self, user_id, message):
-        """Gửi tin nhắn text"""
-        url = f"{self.base_url}/oa/message/cs"
-        headers = {
-            'Content-Type': 'application/json',
-            'access_token': self.token
-        }
+    def send_message(self, chat_id, text):
+        """Gửi tin nhắn text theo Bot API"""
+        url = f"{self.base_url}/sendMessage"
         data = {
-            'recipient': {
-                'user_id': user_id
-            },
-            'message': {
-                'text': message
-            }
+            'chat_id': str(chat_id),
+            'text': text[:2000]  # Giới hạn 2000 ký tự
         }
         
         try:
-            response = requests.post(url, headers=headers, json=data)
+            response = requests.post(url, json=data)
             logger.info(f"Sent message response: {response.status_code}")
-            return response.json()
+            logger.info(f"Response content: {response.text}")
+            return response.json() if response.status_code == 200 else None
         except Exception as e:
             logger.error(f"Error sending message: {e}")
             return None
     
-    def send_typing_action(self, user_id):
-        """Gửi action đang gõ"""
-        url = f"{self.base_url}/oa/message/cs"
-        headers = {
-            'Content-Type': 'application/json',
-            'access_token': self.token
-        }
-        data = {
-            'recipient': {
-                'user_id': user_id
-            },
-            'sender_action': 'typing_on'
-        }
-        
-        try:
-            response = requests.post(url, headers=headers, json=data)
-            return response.json()
-        except Exception as e:
-            logger.error(f"Error sending typing action: {e}")
-            return None
-
     def set_webhook(self, webhook_url):
-        """Thiết lập webhook"""
-        url = f"{self.base_url}/oa/webhook"
-        headers = {
-            'Content-Type': 'application/json',
-            'access_token': self.token
-        }
+        """Thiết lập webhook cho Bot API"""
+        url = f"{self.base_url}/setWebhook"
         data = {
-            'url': webhook_url,
-            'events': ['user_send_text', 'user_send_image', 'user_send_link']
+            'url': webhook_url
         }
         
         try:
-            response = requests.post(url, headers=headers, json=data)
+            response = requests.post(url, json=data)
             logger.info(f"Webhook setup response: {response.status_code}")
-            return response.json()
+            logger.info(f"Response content: {response.text}")
+            return response.json() if response.status_code == 200 else None
         except Exception as e:
             logger.error(f"Error setting webhook: {e}")
+            return None
+
+    def get_bot_info(self):
+        """Lấy thông tin bot để test token"""
+        url = f"{self.base_url}/getMe"
+        
+        try:
+            response = requests.get(url)
+            logger.info(f"Get bot info response: {response.status_code}")
+            logger.info(f"Response content: {response.text}")
+            return response.json() if response.status_code == 200 else None
+        except Exception as e:
+            logger.error(f"Error getting bot info: {e}")
             return None
 
 class GeminiAI:
@@ -167,13 +148,9 @@ class GeminiAI:
         
         message_lower = message.lower()
         return any(keyword in message_lower for keyword in search_keywords)
-    
-    def generate_response_async(self, message, context=None, use_search=False):
-        """Async wrapper cho generate_response"""
-        return self.executor.submit(self.generate_response, message, context, use_search)
 
 # Khởi tạo bot và AI
-zalo_bot = ZaloBot(ZALO_BOT_TOKEN)
+zalo_bot = ZaloBot(ZALO_BOT_TOKEN) if ZALO_BOT_TOKEN else None
 gemini_ai = GeminiAI(GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 # Lưu trữ context người dùng đơn giản (trong thực tế nên dùng database)
@@ -186,12 +163,13 @@ def health_check():
         "status": "running",
         "bot_configured": bool(ZALO_BOT_TOKEN),
         "gemini_configured": bool(GEMINI_API_KEY),
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat(),
+        "api_type": "Zalo Bot API"
     })
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """Xử lý webhook từ Zalo"""
+    """Xử lý webhook từ Zalo Bot API"""
     try:
         data = request.get_json()
         logger.info(f"Received webhook data: {json.dumps(data, indent=2)}")
@@ -199,10 +177,9 @@ def webhook():
         if not data:
             return jsonify({"status": "no data"}), 400
         
-        # Xử lý event
-        if 'events' in data:
-            for event in data['events']:
-                handle_event(event)
+        # Xử lý tin nhắn từ Bot API
+        if 'message' in data:
+            handle_message(data)
         
         return jsonify({"status": "ok"}), 200
         
@@ -210,45 +187,22 @@ def webhook():
         logger.error(f"Error in webhook: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
-def handle_event(event):
-    """Xử lý từng event"""
+def handle_message(data):
+    """Xử lý tin nhắn từ Bot API"""
     try:
-        event_name = event.get('event_name')
-        user_id = event.get('sender', {}).get('id')
+        message_data = data.get('message', {})
+        chat_id = message_data.get('chat', {}).get('id')
+        user_id = message_data.get('from', {}).get('id')
+        text = message_data.get('text', '')
         
-        if not user_id:
-            logger.warning("No user_id found in event")
+        if not chat_id or not text:
+            logger.warning("Missing chat_id or text in message")
             return
         
-        logger.info(f"Handling event: {event_name} from user: {user_id}")
-        
-        if event_name == 'user_send_text':
-            handle_text_message(event, user_id)
-        elif event_name == 'user_send_image':
-            handle_image_message(event, user_id)
-        elif event_name == 'user_send_link':
-            handle_link_message(event, user_id)
-        else:
-            logger.info(f"Unhandled event: {event_name}")
-            
-    except Exception as e:
-        logger.error(f"Error handling event: {e}")
-
-def handle_text_message(event, user_id):
-    """Xử lý tin nhắn text"""
-    try:
-        message = event.get('message', {}).get('text', '')
-        
-        if not message:
-            return
-        
-        logger.info(f"Received message from {user_id}: {message}")
-        
-        # Gửi typing action
-        zalo_bot.send_typing_action(user_id)
+        logger.info(f"Received message from {user_id} in chat {chat_id}: {text}")
         
         # Xử lý các lệnh đặc biệt
-        if message.lower().startswith('/start'):
+        if text.lower().startswith('/start'):
             response = """🤖 Xin chào! Tôi là Bot AI được trang bị Gemini 2.5 Flash với khả năng:
 
 ✨ Trả lời câu hỏi thông minh
@@ -257,12 +211,11 @@ def handle_text_message(event, user_id):
 🗣️ Trò chuyện tự nhiên bằng tiếng Việt
 
 Hãy gửi bất kỳ câu hỏi nào bạn muốn!"""
-            zalo_bot.send_message(user_id, response)
+            zalo_bot.send_message(chat_id, response)
             return
             
-        elif message.lower().startswith('/help'):
-            response = """
-📋 Danh sách lệnh:
+        elif text.lower().startswith('/help'):
+            response = """📋 Danh sách lệnh:
 /start - Khởi động bot
 /help - Hiển thị trợ giúp
 /clear - Xóa lịch sử trò chuyện
@@ -281,36 +234,37 @@ Hãy gửi bất kỳ câu hỏi nào bạn muốn!"""
 • Cần thông tin mới nhất
 • Hỏi về sự kiện hiện tại
 
-Chỉ cần gửi tin nhắn bình thường để bắt đầu!
-            """
-            zalo_bot.send_message(user_id, response.strip())
+Chỉ cần gửi tin nhắn bình thường để bắt đầu!"""
+            zalo_bot.send_message(chat_id, response)
             return
             
-        elif message.lower().startswith('/clear'):
-            if user_id in user_context:
-                del user_context[user_id]
+        elif text.lower().startswith('/clear'):
+            context_key = f"{chat_id}_{user_id}"
+            if context_key in user_context:
+                del user_context[context_key]
             response = "🗑️ Đã xóa lịch sử trò chuyện!"
-            zalo_bot.send_message(user_id, response)
+            zalo_bot.send_message(chat_id, response)
             return
             
-        elif message.lower().startswith('/search '):
-            search_query = message[8:]  # Bỏ "/search "
+        elif text.lower().startswith('/search '):
+            search_query = text[8:]  # Bỏ "/search "
             if search_query.strip():
                 logger.info(f"Force search for: {search_query}")
-                zalo_bot.send_message(user_id, "🔍 Đang tìm kiếm thông tin mới nhất...")
+                zalo_bot.send_message(chat_id, "🔍 Đang tìm kiếm thông tin mới nhất...")
                 if gemini_ai:
                     ai_response = gemini_ai.generate_response(search_query, None, use_search=True)
-                    zalo_bot.send_message(user_id, f"🔍 **Kết quả tìm kiếm:**\n\n{ai_response}")
+                    zalo_bot.send_message(chat_id, f"🔍 **Kết quả tìm kiếm:**\n\n{ai_response}")
                 return
             else:
-                zalo_bot.send_message(user_id, "❌ Vui lòng nhập nội dung cần tìm kiếm. Ví dụ: /search giá Bitcoin hôm nay")
+                zalo_bot.send_message(chat_id, "❌ Vui lòng nhập nội dung cần tìm kiếm. Ví dụ: /search giá Bitcoin hôm nay")
                 return
         
         # Sử dụng Gemini AI để tạo phản hồi
         if gemini_ai:
             try:
-                # Lấy context của user
-                context = user_context.get(user_id, [])
+                # Lấy context của user (kết hợp chat_id và user_id)
+                context_key = f"{chat_id}_{user_id}"
+                context = user_context.get(context_key, [])
                 context_text = None
                 if context:
                     # Lấy 3 tin nhắn gần nhất làm context
@@ -318,26 +272,26 @@ Chỉ cần gửi tin nhắn bình thường để bắt đầu!
                     context_text = "\n".join([f"User: {ctx['user']}\nBot: {ctx['bot']}" for ctx in recent_context])
                 
                 # Kiểm tra xem có nên thông báo đang tìm kiếm không
-                will_search = gemini_ai._should_use_search(message)
+                will_search = gemini_ai._should_use_search(text)
                 if will_search:
-                    zalo_bot.send_message(user_id, "🔍 Đang tìm kiếm thông tin mới nhất...")
+                    zalo_bot.send_message(chat_id, "🔍 Đang tìm kiếm thông tin mới nhất...")
                 
                 # Tạo phản hồi với SDK mới
-                ai_response = gemini_ai.generate_response(message, context_text)
+                ai_response = gemini_ai.generate_response(text, context_text)
                 
                 # Lưu context
-                if user_id not in user_context:
-                    user_context[user_id] = []
+                if context_key not in user_context:
+                    user_context[context_key] = []
                 
-                user_context[user_id].append({
-                    'user': message,
+                user_context[context_key].append({
+                    'user': text,
                     'bot': ai_response,
                     'timestamp': datetime.now().isoformat()
                 })
                 
                 # Giữ chỉ 10 cặp hỏi-đáp gần nhất
-                if len(user_context[user_id]) > 10:
-                    user_context[user_id] = user_context[user_id][-10:]
+                if len(user_context[context_key]) > 10:
+                    user_context[context_key] = user_context[context_key][-10:]
                 
                 # Gửi phản hồi với prefix nếu đã tìm kiếm
                 if will_search:
@@ -345,40 +299,23 @@ Chỉ cần gửi tin nhắn bình thường để bắt đầu!
                 else:
                     final_response = ai_response
                     
-                zalo_bot.send_message(user_id, final_response)
+                zalo_bot.send_message(chat_id, final_response)
                 
             except Exception as e:
                 logger.error(f"Error in AI processing: {e}")
-                zalo_bot.send_message(user_id, "⚠️ Đã xảy ra lỗi khi xử lý. Tôi sẽ thử trả lời đơn giản...")
+                zalo_bot.send_message(chat_id, "⚠️ Đã xảy ra lỗi khi xử lý. Tôi sẽ thử trả lời đơn giản...")
                 
                 # Fallback response
-                fallback_response = f"📝 Tôi đã nhận được: \"{message}\"\n\n💡 Bạn có thể thử:\n• Diễn đạt lại câu hỏi\n• Sử dụng /help để xem hướng dẫn\n• Dùng /search [nội dung] để tìm kiếm"
-                zalo_bot.send_message(user_id, fallback_response)
+                fallback_response = f"📝 Tôi đã nhận được: \"{text}\"\n\n💡 Bạn có thể thử:\n• Diễn đạt lại câu hỏi\n• Sử dụng /help để xem hướng dẫn\n• Dùng /search [nội dung] để tìm kiếm"
+                zalo_bot.send_message(chat_id, fallback_response)
             
         else:
             # Fallback nếu không có Gemini
-            response = f"📝 Tôi đã nhận được tin nhắn: {message}\n\n⚠️ Tính năng AI chưa được cấu hình. Vui lòng liên hệ admin để kích hoạt."
-            zalo_bot.send_message(user_id, response)
+            response = f"📝 Tôi đã nhận được tin nhắn: {text}\n\n⚠️ Tính năng AI chưa được cấu hình. Vui lòng liên hệ admin để kích hoạt."
+            zalo_bot.send_message(chat_id, response)
             
     except Exception as e:
-        logger.error(f"Error handling text message: {e}")
-        zalo_bot.send_message(user_id, "❌ Xin lỗi, đã xảy ra lỗi khi xử lý tin nhắn. Vui lòng thử lại!")
-
-def handle_image_message(event, user_id):
-    """Xử lý tin nhắn hình ảnh"""
-    try:
-        response = "🖼️ Cảm ơn bạn đã gửi hình ảnh! Hiện tại tôi chưa thể phân tích hình ảnh, nhưng tôi có thể trả lời các câu hỏi khác của bạn."
-        zalo_bot.send_message(user_id, response)
-    except Exception as e:
-        logger.error(f"Error handling image message: {e}")
-
-def handle_link_message(event, user_id):
-    """Xử lý tin nhắn link"""
-    try:
-        response = "🔗 Cảm ơn bạn đã chia sẻ link! Tôi có thể trả lời các câu hỏi về nội dung hoặc hỗ trợ bạn với vấn đề khác."
-        zalo_bot.send_message(user_id, response)
-    except Exception as e:
-        logger.error(f"Error handling link message: {e}")
+        logger.error(f"Error handling message: {e}")
 
 @app.route('/test-token', methods=['GET'])
 def test_token():
@@ -387,26 +324,23 @@ def test_token():
         if not ZALO_BOT_TOKEN:
             return jsonify({"error": "ZALO_BOT_TOKEN not configured"}), 400
         
-        # Test với API đơn giản
-        url = f"{zalo_bot.base_url}/oa/profile"
-        headers = {
-            'access_token': ZALO_BOT_TOKEN
-        }
+        if not zalo_bot:
+            return jsonify({"error": "ZaloBot not initialized"}), 400
         
-        response = requests.get(url, headers=headers)
-        logger.info(f"Token test response: {response.status_code}")
-        logger.info(f"Token test response text: {response.text}")
+        # Test với getMe API
+        result = zalo_bot.get_bot_info()
         
         return jsonify({
             "token_configured": True,
-            "api_response_status": response.status_code,
-            "api_response": response.text,
-            "token_valid": response.status_code == 200
+            "bot_info": result,
+            "token_valid": result is not None and result.get('ok') == True
         })
         
     except Exception as e:
         logger.error(f"Error testing token: {e}")
         return jsonify({"error": str(e)}), 500
+
+@app.route('/setup-webhook', methods=['POST', 'GET'])
 def setup_webhook():
     """Endpoint để thiết lập webhook (chỉ cần gọi 1 lần)"""
     try:
@@ -418,21 +352,25 @@ def setup_webhook():
         if not WEBHOOK_URL:
             return jsonify({"error": "WEBHOOK_URL not configured", "success": False}), 400
         
+        if not zalo_bot:
+            return jsonify({"error": "ZaloBot not initialized", "success": False}), 400
+        
         logger.info(f"Using webhook URL: {WEBHOOK_URL}")
-        result = zalo_bot.set_webhook(WEBHOOK_URL)
+        result = zalo_bot.set_webhook(WEBHOOK_URL + '/webhook')
         logger.info(f"Webhook setup result: {result}")
         
-        if result:
+        if result and result.get('ok') == True:
             return jsonify({
                 "success": True,
-                "webhook_url": WEBHOOK_URL,
+                "webhook_url": WEBHOOK_URL + '/webhook',
                 "zalo_response": result
             })
         else:
             return jsonify({
                 "success": False,
                 "error": "Failed to setup webhook",
-                "webhook_url": WEBHOOK_URL
+                "webhook_url": WEBHOOK_URL + '/webhook',
+                "zalo_response": result
             }), 500
             
     except Exception as e:
@@ -440,7 +378,7 @@ def setup_webhook():
         return jsonify({
             "success": False,
             "error": str(e),
-            "webhook_url": WEBHOOK_URL if WEBHOOK_URL else "Not configured"
+            "webhook_url": WEBHOOK_URL + '/webhook' if WEBHOOK_URL else "Not configured"
         }), 500
 
 if __name__ == '__main__':
@@ -452,7 +390,7 @@ if __name__ == '__main__':
     logger.info(f"Zalo Bot Token configured: {bool(ZALO_BOT_TOKEN)}")
     logger.info(f"Gemini API configured: {bool(GEMINI_API_KEY)}")
     logger.info(f"Webhook URL: {WEBHOOK_URL}")
-    logger.info(f"Bot API URL: {zalo_bot.base_url if ZALO_BOT_TOKEN else 'Not configured'}")
+    logger.info(f"Bot API URL: {zalo_bot.base_url if zalo_bot else 'Not configured'}")
     logger.info("✨ Features: Zalo Bot API, Thinking, Google Search, Streaming responses")
     
     app.run(host='0.0.0.0', port=port, debug=False)
