@@ -384,13 +384,38 @@ def handle_link_message(event, user_id):
 def setup_webhook():
     """Endpoint để thiết lập webhook (chỉ cần gọi 1 lần)"""
     try:
-        if not WEBHOOK_URL:
-            return jsonify({"error": "WEBHOOK_URL not configured"}), 400
+        logger.info("Setting up webhook...")
+        
+        if not ZALO_BOT_TOKEN:
+            return jsonify({"error": "ZALO_BOT_TOKEN not configured", "success": False}), 400
             
+        if not WEBHOOK_URL:
+            return jsonify({"error": "WEBHOOK_URL not configured", "success": False}), 400
+        
+        logger.info(f"Using webhook URL: {WEBHOOK_URL}")
         result = zalo_bot.set_webhook(WEBHOOK_URL)
-        return jsonify(result)
+        logger.info(f"Webhook setup result: {result}")
+        
+        if result:
+            return jsonify({
+                "success": True,
+                "webhook_url": WEBHOOK_URL,
+                "zalo_response": result
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "error": "Failed to setup webhook",
+                "webhook_url": WEBHOOK_URL
+            }), 500
+            
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        logger.error(f"Error setting up webhook: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "webhook_url": WEBHOOK_URL if WEBHOOK_URL else "Not configured"
+        }), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8000))
