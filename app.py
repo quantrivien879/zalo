@@ -449,9 +449,10 @@ if __name__ == '__main__':
     # Log thông tin cấu hình
     logger.info("🚀 Starting Zalo Bot with Gemini 2.5 Flash + Google Search")
     logger.info(f"Port: {port}")
-    logger.info(f"Zalo Token configured: {bool(ZALO_BOT_TOKEN)}")
+    logger.info(f"Zalo Bot Token configured: {bool(ZALO_BOT_TOKEN)}")
     logger.info(f"Gemini API configured: {bool(GEMINI_API_KEY)}")
     logger.info(f"Webhook URL: {WEBHOOK_URL}")
-    logger.info("✨ Features: Thinking, Google Search, Streaming responses")
+    logger.info(f"Bot API URL: {zalo_bot.base_url if ZALO_BOT_TOKEN else 'Not configured'}")
+    logger.info("✨ Features: Zalo Bot API, Thinking, Google Search, Streaming responses")
     
     app.run(host='0.0.0.0', port=port, debug=False)
