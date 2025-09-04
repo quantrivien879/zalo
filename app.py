@@ -37,7 +37,7 @@ class ZaloBot:
             response = requests.post(url, json=data)
             logger.info(f"Sent message response: {response.status_code}")
             logger.info(f"Response content: {response.text}")
-            return response.json() if response.status_code == 200 else None
+            return response.json() if response.status_code == 200 else response.json() if response.status_code == 200 else None
         except Exception as e:
             logger.error(f"Error sending message: {e}")
             return None
