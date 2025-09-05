@@ -403,7 +403,11 @@ def setup_webhook():
                 "current_length": len(WEBHOOK_SECRET_TOKEN)
             }), 400
         
-        webhook_endpoint = WEBHOOK_URL + '/webhook'
+        # Tránh trùng lặp /webhook trong URL
+        if WEBHOOK_URL.endswith('/webhook'):
+            webhook_endpoint = WEBHOOK_URL
+        else:
+            webhook_endpoint = WEBHOOK_URL + '/webhook'
         logger.info(f"Using webhook URL: {webhook_endpoint}")
         logger.info(f"Using secret token length: {len(WEBHOOK_SECRET_TOKEN)} characters")
         
